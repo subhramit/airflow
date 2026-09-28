@@ -14,12 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Sensor waiting for a SQL query to return a truthy first cell in InfluxDB 3.x."""
+"""Sensors that wait for data in InfluxDB 3.x."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from airflow.providers.common.compat.sdk import AirflowFailException, BaseSensorOperator, conf
@@ -43,11 +43,12 @@ class InfluxDB3Sensor(BaseSensorOperator):
     :param influxdb3_conn_id: Reference to :ref:`InfluxDB 3 connection id <howto/connection:influxdb3>`.
         Defaults to ``influxdb3_default``.
     :param fail_on_empty: Fail instead of waiting when the query returns no rows. Defaults to ``False``.
+    :param parameters: Values for ``$name`` placeholders in ``sql``. Optional.
     :param deferrable: Run polling in the triggerer. Defaults to the
         ``operators.default_deferrable`` configuration (``False`` if unset).
     """
 
-    template_fields: Sequence[str] = ("sql", "influxdb3_conn_id")
+    template_fields: Sequence[str] = ("sql", "parameters", "influxdb3_conn_id")
     template_ext: Sequence[str] = (".sql",)
 
     def __init__(
@@ -56,6 +57,7 @@ class InfluxDB3Sensor(BaseSensorOperator):
         sql: str,
         influxdb3_conn_id: str = "influxdb3_default",
         fail_on_empty: bool = False,
+        parameters: dict[str, Any] | None = None,
         deferrable: bool = conf.getboolean("operators", "default_deferrable", fallback=False),
         **kwargs,
     ) -> None:
@@ -63,12 +65,15 @@ class InfluxDB3Sensor(BaseSensorOperator):
         self.sql = sql
         self.influxdb3_conn_id = influxdb3_conn_id
         self.fail_on_empty = fail_on_empty
+        self.parameters = parameters
         self.deferrable = deferrable
 
     def poke(self, context: Context) -> bool:
         """Return whether the query result meets the sensor condition."""
         self.log.info("Poking with SQL query: %s", self.sql)
-        dataframe = InfluxDB3Hook(conn_id=self.influxdb3_conn_id).query(self.sql)
+        dataframe = InfluxDB3Hook(conn_id=self.influxdb3_conn_id).query(
+            self.sql, query_parameters=self.parameters
+        )
         if dataframe.empty and self.fail_on_empty:
             raise AirflowFailException("No rows returned, raising as per fail_on_empty flag")
         return _first_cell_is_truthy(dataframe)
@@ -88,6 +93,7 @@ class InfluxDB3Sensor(BaseSensorOperator):
                 influxdb3_conn_id=self.influxdb3_conn_id,
                 poll_interval=self.poke_interval,
                 fail_on_empty=self.fail_on_empty,
+                parameters=self.parameters,
             ),
             method_name="execute_complete",
         )
@@ -106,3 +112,84 @@ class InfluxDB3Sensor(BaseSensorOperator):
             raise RuntimeError(f"InfluxDB 3 sensor returned unexpected status: {status!r}")
 
         self.log.info("InfluxDB 3 sensor condition met")
+
+
+def _quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _get_window_bound(value: str | datetime) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value).strip()
+
+
+class InfluxDB3MeasurementWindowSensor(InfluxDB3Sensor):
+    """
+    Wait until an InfluxDB 3.x measurement has at least one row in a time window.
+
+    The window is half-open: ``window_start <= time < window_end``. The sensor sends the
+    window bounds as query parameters instead of placing them in the SQL text.
+
+    .. seealso::
+        For more information on how to use this sensor, take a look at the guide:
+        :ref:`howto/sensor:InfluxDB3MeasurementWindowSensor`
+
+    :param measurement: The measurement (table) to check.
+    :param window_start: Start of the window, inclusive. An ISO 8601 string or a ``datetime``.
+    :param window_end: End of the window, exclusive. An ISO 8601 string or a ``datetime``.
+    :param influxdb3_conn_id: Reference to :ref:`InfluxDB 3 connection id <howto/connection:influxdb3>`.
+        Defaults to ``influxdb3_default``.
+    :param deferrable: Run polling in the triggerer. Defaults to the
+        ``operators.default_deferrable`` configuration (``False`` if unset).
+    """
+
+    template_fields: Sequence[str] = ("measurement", "window_start", "window_end", "influxdb3_conn_id")
+    template_ext: Sequence[str] = ()
+
+    def __init__(
+        self,
+        *,
+        measurement: str,
+        window_start: str | datetime,
+        window_end: str | datetime,
+        influxdb3_conn_id: str = "influxdb3_default",
+        **kwargs,
+    ) -> None:
+        super().__init__(sql="", influxdb3_conn_id=influxdb3_conn_id, **kwargs)
+        self.measurement = measurement
+        self.window_start = window_start
+        self.window_end = window_end
+
+    def _build_query(self) -> None:
+        if not str(self.measurement).strip():
+            raise ValueError("measurement must not be empty")
+
+        window_start = _get_window_bound(self.window_start)
+        window_end = _get_window_bound(self.window_end)
+        if not window_start or not window_end:
+            raise ValueError("window_start and window_end must not be empty")
+
+        try:
+            start_datetime = datetime.fromisoformat(window_start)
+            end_datetime = datetime.fromisoformat(window_end)
+        except ValueError:
+            pass
+        else:
+            if (start_datetime.tzinfo is None) == (end_datetime.tzinfo is None):
+                if start_datetime >= end_datetime:
+                    raise ValueError(
+                        f"window_start ({window_start}) must be before window_end ({window_end})"
+                    )
+
+        self.sql = (
+            f"SELECT 1 FROM {_quote_identifier(str(self.measurement))} "
+            "WHERE time >= CAST($window_start AS TIMESTAMP) "
+            "AND time < CAST($window_end AS TIMESTAMP) "
+            "LIMIT 1"
+        )
+        self.parameters = {"window_start": window_start, "window_end": window_end}
+
+    def poke(self, context: Context) -> bool:
+        self._build_query()
+        return super().poke(context)

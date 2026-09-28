@@ -38,3 +38,21 @@ Deferrable mode
 Set ``deferrable=True`` to release the worker slot between queries. The
 :class:`~airflow.providers.influxdb.triggers.influxdb3.InfluxDB3SensorTrigger` repeats the query
 at the configured ``poke_interval`` until the condition is met or Airflow reaches the sensor timeout.
+
+.. _howto/sensor:InfluxDB3MeasurementWindowSensor:
+
+InfluxDB3MeasurementWindowSensor
+================================
+
+Use :class:`~airflow.providers.influxdb.sensors.influxdb3.InfluxDB3MeasurementWindowSensor` to wait
+until a measurement has at least one row in a time window. You do not need to write the SQL query.
+The window is half-open: ``window_start <= time < window_end``.
+
+.. exampleinclude:: /../../influxdb/tests/system/influxdb/example_influxdb3.py
+    :language: python
+    :start-after: [START howto_sensor_influxdb3_measurement_window]
+    :end-before: [END howto_sensor_influxdb3_measurement_window]
+
+``window_start`` and ``window_end`` accept ISO 8601 strings or ``datetime`` objects. Both are
+templated. The sensor sends them as query parameters and quotes the measurement name, so these
+values are not placed directly into the SQL text. The sensor also accepts ``deferrable=True``.

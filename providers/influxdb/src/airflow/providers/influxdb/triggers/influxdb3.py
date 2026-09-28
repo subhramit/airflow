@@ -79,7 +79,15 @@ class InfluxDB3QueryTrigger(BaseTrigger):
 
 
 class InfluxDB3SensorTrigger(BaseTrigger):
-    """Poll an InfluxDB 3.x SQL query until its first cell meets the sensor condition."""
+    """
+    Poll an InfluxDB 3.x SQL query until its first cell meets the sensor condition.
+
+    :param sql: The SQL query to poll.
+    :param influxdb3_conn_id: Reference to :ref:`InfluxDB 3 connection id <howto/connection:influxdb3>`.
+    :param poll_interval: Seconds to wait between queries.
+    :param fail_on_empty: Emit a ``fail`` event when the query returns no rows.
+    :param parameters: Values for ``$name`` placeholders in ``sql``. Optional.
+    """
 
     def __init__(
         self,
@@ -87,12 +95,14 @@ class InfluxDB3SensorTrigger(BaseTrigger):
         influxdb3_conn_id: str = "influxdb3_default",
         poll_interval: float = 60,
         fail_on_empty: bool = False,
+        parameters: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
         self.sql = sql
         self.influxdb3_conn_id = influxdb3_conn_id
         self.poll_interval = poll_interval
         self.fail_on_empty = fail_on_empty
+        self.parameters = parameters
 
     def serialize(self) -> tuple[str, dict[str, Any]]:
         return (
@@ -102,6 +112,7 @@ class InfluxDB3SensorTrigger(BaseTrigger):
                 "influxdb3_conn_id": self.influxdb3_conn_id,
                 "poll_interval": self.poll_interval,
                 "fail_on_empty": self.fail_on_empty,
+                "parameters": self.parameters,
             },
         )
 
@@ -109,7 +120,7 @@ class InfluxDB3SensorTrigger(BaseTrigger):
         hook = InfluxDB3Hook(conn_id=self.influxdb3_conn_id)
         while True:
             try:
-                dataframe = await hook.query_async(self.sql)
+                dataframe = await hook.query_async(self.sql, query_parameters=self.parameters)
             except Exception as error:
                 self.log.exception("InfluxDB 3 sensor query failed")
                 yield TriggerEvent({"status": "error", "message": str(error)})

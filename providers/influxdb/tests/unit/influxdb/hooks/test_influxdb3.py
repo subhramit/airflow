@@ -99,6 +99,17 @@ class TestInfluxDB3Hook:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 2
 
+    def test_query_with_parameters(self):
+        self.influxdb3_hook.client = mock.Mock(spec_set=["query"])
+        self.influxdb3_hook.client.query = mock.Mock(return_value=pd.DataFrame({"a": [1]}))
+        self.influxdb3_hook.get_conn = mock.Mock(return_value=self.influxdb3_hook.client)
+
+        self.influxdb3_hook.query("SELECT 1 WHERE x = $x", query_parameters={"x": 1})
+
+        self.influxdb3_hook.client.query.assert_called_once_with(
+            query="SELECT 1 WHERE x = $x", language="sql", mode="pandas", query_parameters={"x": 1}
+        )
+
     @pytest.mark.asyncio
     async def test_query_async(self):
         """Test async query with InfluxDB 3.x."""
@@ -116,6 +127,18 @@ class TestInfluxDB3Hook:
         )
         assert isinstance(result, pd.DataFrame)
         assert result.equals(mock_df)
+
+    @pytest.mark.asyncio
+    async def test_query_async_with_parameters(self):
+        self.influxdb3_hook.client = mock.Mock(spec_set=["query_async"])
+        self.influxdb3_hook.client.query_async = mock.AsyncMock(return_value=pd.DataFrame({"a": [1]}))
+        self.influxdb3_hook.aget_conn = mock.AsyncMock(return_value=self.influxdb3_hook.client)
+
+        await self.influxdb3_hook.query_async("SELECT 1 WHERE x = $x", query_parameters={"x": 1})
+
+        self.influxdb3_hook.client.query_async.assert_awaited_once_with(
+            query="SELECT 1 WHERE x = $x", language="sql", mode="pandas", query_parameters={"x": 1}
+        )
 
     @pytest.mark.asyncio
     async def test_query_async_requires_dataframe_result(self):

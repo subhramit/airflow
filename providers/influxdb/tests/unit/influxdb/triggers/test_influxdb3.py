@@ -89,6 +89,7 @@ class TestInfluxDB3SensorTrigger:
             influxdb3_conn_id=CONN_ID,
             poll_interval=30,
             fail_on_empty=True,
+            parameters={"host": "a"},
         )
         classpath, kwargs = trigger.serialize()
 
@@ -98,6 +99,7 @@ class TestInfluxDB3SensorTrigger:
             "influxdb3_conn_id": CONN_ID,
             "poll_interval": 30,
             "fail_on_empty": True,
+            "parameters": {"host": "a"},
         }
 
     @pytest.mark.asyncio
@@ -110,7 +112,7 @@ class TestInfluxDB3SensorTrigger:
         events = [event async for event in InfluxDB3SensorTrigger(sql=SQL).run()]
 
         mock_hook_class.assert_called_once_with(conn_id="influxdb3_default")
-        mock_hook.query_async.assert_awaited_once_with(SQL)
+        mock_hook.query_async.assert_awaited_once_with(SQL, query_parameters=None)
         mock_sleep.assert_not_awaited()
         assert events == [TriggerEvent({"status": "success"})]
 
@@ -142,7 +144,7 @@ class TestInfluxDB3SensorTrigger:
 
         events = [event async for event in InfluxDB3SensorTrigger(sql=SQL, fail_on_empty=True).run()]
 
-        mock_hook.query_async.assert_awaited_once_with(SQL)
+        mock_hook.query_async.assert_awaited_once_with(SQL, query_parameters=None)
         mock_sleep.assert_not_awaited()
         assert events == [
             TriggerEvent({"status": "fail", "message": "No rows returned, raising as per fail_on_empty flag"})
@@ -157,7 +159,7 @@ class TestInfluxDB3SensorTrigger:
         events = [event async for event in InfluxDB3SensorTrigger(sql=SQL).run()]
 
         mock_hook_class.assert_called_once_with(conn_id="influxdb3_default")
-        mock_hook.query_async.assert_awaited_once_with(SQL)
+        mock_hook.query_async.assert_awaited_once_with(SQL, query_parameters=None)
         assert events == [TriggerEvent({"status": "error", "message": "boom"})]
 
     @pytest.mark.asyncio
@@ -174,6 +176,19 @@ class TestInfluxDB3SensorTrigger:
         assert mock_hook.query_async.await_count == 2
         mock_sleep.assert_awaited_once_with(30)
         assert events == [TriggerEvent({"status": "error", "message": "boom"})]
+
+    @pytest.mark.asyncio
+    @mock.patch("airflow.providers.influxdb.triggers.influxdb3.asyncio.sleep", new_callable=mock.AsyncMock)
+    @mock.patch("airflow.providers.influxdb.triggers.influxdb3.InfluxDB3Hook", autospec=True)
+    async def test_run_passes_parameters(self, mock_hook_class, mock_sleep):
+        mock_hook = mock_hook_class.return_value
+        mock_hook.query_async = mock.AsyncMock(return_value=pd.DataFrame({"literal": [1]}))
+
+        events = [event async for event in InfluxDB3SensorTrigger(sql=SQL, parameters={"host": "a"}).run()]
+
+        mock_hook.query_async.assert_awaited_once_with(SQL, query_parameters={"host": "a"})
+        mock_sleep.assert_not_awaited()
+        assert events == [TriggerEvent({"status": "success"})]
 
     @pytest.mark.asyncio
     @mock.patch("airflow.providers.influxdb.triggers.influxdb3.InfluxDB3Hook", autospec=True)
@@ -198,5 +213,5 @@ class TestInfluxDB3SensorTrigger:
         with pytest.raises(asyncio.CancelledError):
             await anext(InfluxDB3SensorTrigger(sql=SQL, poll_interval=30).run())
 
-        mock_hook.query_async.assert_awaited_once_with(SQL)
+        mock_hook.query_async.assert_awaited_once_with(SQL, query_parameters=None)
         mock_sleep.assert_awaited_once_with(30)

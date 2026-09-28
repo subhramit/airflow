@@ -50,6 +50,10 @@ if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Connection
 
 
+def _get_query_kwargs(query_parameters: dict[str, Any] | None) -> dict[str, Any]:
+    return {"query_parameters": query_parameters} if query_parameters else {}
+
+
 class InfluxDB3Hook(BaseHook):
     """
     Interact with InfluxDB 3.x (Core/Enterprise/Cloud Dedicated).
@@ -193,17 +197,20 @@ class InfluxDB3Hook(BaseHook):
 
         return self.client
 
-    def query(self, query: str) -> pd.DataFrame:
+    def query(self, query: str, query_parameters: dict[str, Any] | None = None) -> pd.DataFrame:
         """
         Run a SQL query and return results as a pandas DataFrame.
 
         :param query: SQL query string
+        :param query_parameters: Values for ``$name`` placeholders in the query. Optional.
         :return: pandas DataFrame with query results
         """
         import pandas as pd
 
         client = self.get_conn()
-        result = client.query(query=query, language="sql", mode="pandas")
+        result = client.query(
+            query=query, language="sql", mode="pandas", **_get_query_kwargs(query_parameters)
+        )
 
         if not isinstance(result, pd.DataFrame):
             raise ValueError(
@@ -213,11 +220,12 @@ class InfluxDB3Hook(BaseHook):
 
         return result
 
-    async def query_async(self, query: str) -> pd.DataFrame:
+    async def query_async(self, query: str, query_parameters: dict[str, Any] | None = None) -> pd.DataFrame:
         """
         Run a SQL query from the triggerer and return results as a pandas DataFrame.
 
         :param query: SQL query string
+        :param query_parameters: Values for ``$name`` placeholders in the query. Optional.
         :return: pandas DataFrame with query results
         """
         client = await self.aget_conn()
@@ -225,7 +233,9 @@ class InfluxDB3Hook(BaseHook):
 
         # InfluxDB 3 does not expose a submit-then-poll query API, so this coroutine
         # resolves only after the full result stream has been read.
-        result = await client.query_async(query=query, language="sql", mode="pandas")
+        result = await client.query_async(
+            query=query, language="sql", mode="pandas", **_get_query_kwargs(query_parameters)
+        )
 
         if not isinstance(result, pd.DataFrame):
             raise ValueError(

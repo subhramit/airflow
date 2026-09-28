@@ -16,14 +16,14 @@
 # under the License.
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pandas as pd
 import pytest
 
 from airflow.providers.common.compat.sdk import AirflowFailException, AirflowSensorTimeout, TaskDeferred
-from airflow.providers.influxdb.sensors.influxdb3 import InfluxDB3Sensor
+from airflow.providers.influxdb.sensors.influxdb3 import InfluxDB3MeasurementWindowSensor, InfluxDB3Sensor
 from airflow.providers.influxdb.triggers.influxdb3 import InfluxDB3SensorTrigger
 
 SQL = """SELECT 1 FROM "events" WHERE time > now() - INTERVAL '1 hour' LIMIT 1"""
@@ -38,8 +38,9 @@ class TestInfluxDB3Sensor:
         assert sensor.sql == SQL
         assert sensor.influxdb3_conn_id == "influxdb3_default"
         assert sensor.fail_on_empty is False
+        assert sensor.parameters is None
         assert sensor.deferrable is False
-        assert sensor.template_fields == ("sql", "influxdb3_conn_id")
+        assert sensor.template_fields == ("sql", "parameters", "influxdb3_conn_id")
         assert sensor.template_ext == (".sql",)
 
     @pytest.mark.parametrize(
@@ -60,7 +61,7 @@ class TestInfluxDB3Sensor:
 
         assert sensor.poke(context={}) is expected
         mock_hook_class.assert_called_once_with(conn_id=CONN_ID)
-        mock_hook_class.return_value.query.assert_called_once_with(SQL)
+        mock_hook_class.return_value.query.assert_called_once_with(SQL, query_parameters=None)
 
     @mock.patch(HOOK_PATH, autospec=True)
     def test_poke_fail_on_empty(self, mock_hook_class):
@@ -84,7 +85,7 @@ class TestInfluxDB3Sensor:
         with pytest.raises(AirflowFailException, match="fail_on_empty"):
             sensor.execute(context={})
 
-        mock_hook_class.return_value.query.assert_called_once_with(SQL)
+        mock_hook_class.return_value.query.assert_called_once_with(SQL, query_parameters=None)
         mock_defer.assert_not_called()
 
     @mock.patch(HOOK_PATH, autospec=True)
@@ -101,7 +102,7 @@ class TestInfluxDB3Sensor:
         sensor = InfluxDB3Sensor(task_id="wait", sql=SQL, deferrable=True)
 
         assert sensor.execute(context={}) is None
-        mock_hook_class.return_value.query.assert_called_once_with(SQL)
+        mock_hook_class.return_value.query.assert_called_once_with(SQL, query_parameters=None)
 
     @mock.patch(HOOK_PATH, autospec=True)
     def test_execute_deferrable_defers_with_sensor_settings(self, mock_hook_class):
@@ -125,8 +126,18 @@ class TestInfluxDB3Sensor:
         assert trigger.influxdb3_conn_id == CONN_ID
         assert trigger.poll_interval == 30
         assert trigger.fail_on_empty is False
+        assert trigger.parameters is None
         assert exc.value.method_name == "execute_complete"
         assert exc.value.timeout == timedelta(minutes=10)
+
+    @mock.patch(HOOK_PATH, autospec=True)
+    def test_poke_passes_parameters(self, mock_hook_class):
+        mock_hook_class.return_value.query.return_value = pd.DataFrame({"literal": [1]})
+        parameters = {"host": "a"}
+        sensor = InfluxDB3Sensor(task_id="wait", sql=SQL, parameters=parameters)
+
+        assert sensor.poke(context={}) is True
+        mock_hook_class.return_value.query.assert_called_once_with(SQL, query_parameters=parameters)
 
     def test_execute_complete_success(self):
         sensor = InfluxDB3Sensor(task_id="wait", sql=SQL, deferrable=True)
@@ -168,3 +179,122 @@ class TestInfluxDB3Sensor:
 
         with pytest.raises(RuntimeError, match=match):
             sensor.execute_complete(context={}, event=event)
+
+
+WINDOW_START = "2026-09-27T00:00:00+00:00"
+WINDOW_END = "2026-09-28T00:00:00+00:00"
+WINDOW_SQL = (
+    'SELECT 1 FROM "events" '
+    "WHERE time >= CAST($window_start AS TIMESTAMP) "
+    "AND time < CAST($window_end AS TIMESTAMP) "
+    "LIMIT 1"
+)
+WINDOW_PARAMETERS = {"window_start": WINDOW_START, "window_end": WINDOW_END}
+
+
+class TestInfluxDB3MeasurementWindowSensor:
+    @staticmethod
+    def _create_sensor(**kwargs):
+        arguments = {
+            "task_id": "wait",
+            "measurement": "events",
+            "window_start": WINDOW_START,
+            "window_end": WINDOW_END,
+            "influxdb3_conn_id": CONN_ID,
+            **kwargs,
+        }
+        return InfluxDB3MeasurementWindowSensor(**arguments)
+
+    def test_init(self):
+        sensor = self._create_sensor()
+
+        assert sensor.template_fields == (
+            "measurement",
+            "window_start",
+            "window_end",
+            "influxdb3_conn_id",
+        )
+        assert sensor.template_ext == ()
+        assert sensor.fail_on_empty is False
+
+    @pytest.mark.parametrize(
+        ("dataframe", "expected"),
+        [
+            pytest.param(pd.DataFrame({"literal": [1]}), True, id="row-in-window"),
+            pytest.param(pd.DataFrame({"literal": []}), False, id="no-row-in-window"),
+        ],
+    )
+    @mock.patch(HOOK_PATH, autospec=True)
+    def test_poke(self, mock_hook_class, dataframe, expected):
+        mock_hook_class.return_value.query.return_value = dataframe
+
+        assert self._create_sensor().poke(context={}) is expected
+        mock_hook_class.return_value.query.assert_called_once_with(
+            WINDOW_SQL, query_parameters=WINDOW_PARAMETERS
+        )
+
+    @mock.patch(HOOK_PATH, autospec=True)
+    def test_poke_quotes_measurement(self, mock_hook_class):
+        mock_hook_class.return_value.query.return_value = pd.DataFrame({"literal": [1]})
+
+        self._create_sensor(measurement='ev"ents; DROP TABLE x').poke(context={})
+
+        sql = mock_hook_class.return_value.query.call_args.args[0]
+        assert sql.startswith('SELECT 1 FROM "ev""ents; DROP TABLE x" WHERE')
+
+    @mock.patch(HOOK_PATH, autospec=True)
+    def test_poke_accepts_datetime_bounds(self, mock_hook_class):
+        mock_hook_class.return_value.query.return_value = pd.DataFrame({"literal": [1]})
+
+        self._create_sensor(
+            window_start=datetime(2026, 9, 27, tzinfo=timezone.utc),
+            window_end=datetime(2026, 9, 28, tzinfo=timezone.utc),
+        ).poke(context={})
+
+        mock_hook_class.return_value.query.assert_called_once_with(
+            WINDOW_SQL, query_parameters=WINDOW_PARAMETERS
+        )
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            pytest.param({"measurement": " "}, "measurement must not be empty", id="empty-measurement"),
+            pytest.param({"window_start": ""}, "must not be empty", id="empty-start"),
+            pytest.param({"window_end": ""}, "must not be empty", id="empty-end"),
+            pytest.param(
+                {"window_start": WINDOW_END, "window_end": WINDOW_START},
+                "must be before",
+                id="start-after-end",
+            ),
+            pytest.param(
+                {"window_start": WINDOW_START, "window_end": WINDOW_START},
+                "must be before",
+                id="empty-window",
+            ),
+        ],
+    )
+    def test_invalid_input(self, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            self._create_sensor(**kwargs).poke(context={})
+
+    @mock.patch(HOOK_PATH, autospec=True)
+    def test_execute_deferrable_defers_with_parameters(self, mock_hook_class):
+        mock_hook_class.return_value.query.return_value = pd.DataFrame({"literal": []})
+        sensor = self._create_sensor(deferrable=True, poke_interval=30, timeout=600)
+
+        with pytest.raises(TaskDeferred) as exc:
+            sensor.execute(context={})
+
+        trigger = exc.value.trigger
+        assert isinstance(trigger, InfluxDB3SensorTrigger)
+        assert trigger.sql == WINDOW_SQL
+        assert trigger.parameters == WINDOW_PARAMETERS
+        assert trigger.fail_on_empty is False
+        assert trigger.poll_interval == 30
+        assert exc.value.timeout == timedelta(minutes=10)
+
+    @mock.patch(HOOK_PATH, autospec=True)
+    def test_execute_deferrable_completes_after_initial_match(self, mock_hook_class):
+        mock_hook_class.return_value.query.return_value = pd.DataFrame({"literal": [1]})
+
+        assert self._create_sensor(deferrable=True).execute(context={}) is None
