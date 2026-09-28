@@ -43,7 +43,7 @@ class InfluxDB3Sensor(BaseSensorOperator):
     :param influxdb3_conn_id: Reference to :ref:`InfluxDB 3 connection id <howto/connection:influxdb3>`.
         Defaults to ``influxdb3_default``.
     :param fail_on_empty: Fail instead of waiting when the query returns no rows. Defaults to ``False``.
-    :param parameters: Values for ``$name`` placeholders in ``sql``. Optional.
+    :param parameters: Values for ``$name`` placeholders in ``sql``. Defaults to ``None``.
     :param deferrable: Run polling in the triggerer. Defaults to the
         ``operators.default_deferrable`` configuration (``False`` if unset).
     """

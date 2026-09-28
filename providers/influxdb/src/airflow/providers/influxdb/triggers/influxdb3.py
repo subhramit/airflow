@@ -84,9 +84,10 @@ class InfluxDB3SensorTrigger(BaseTrigger):
 
     :param sql: The SQL query to poll.
     :param influxdb3_conn_id: Reference to :ref:`InfluxDB 3 connection id <howto/connection:influxdb3>`.
-    :param poll_interval: Seconds to wait between queries.
-    :param fail_on_empty: Emit a ``fail`` event when the query returns no rows.
-    :param parameters: Values for ``$name`` placeholders in ``sql``. Optional.
+        Defaults to ``influxdb3_default``.
+    :param poll_interval: Seconds to wait between queries. Defaults to ``60``.
+    :param fail_on_empty: Emit a ``fail`` event when the query returns no rows. Defaults to ``False``.
+    :param parameters: Values for ``$name`` placeholders in ``sql``. Defaults to ``None``.
     """
 
     def __init__(

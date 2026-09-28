@@ -202,7 +202,7 @@ class InfluxDB3Hook(BaseHook):
         Run a SQL query and return results as a pandas DataFrame.
 
         :param query: SQL query string
-        :param query_parameters: Values for ``$name`` placeholders in the query. Optional.
+        :param query_parameters: Values for ``$name`` placeholders in the query. Defaults to ``None``.
         :return: pandas DataFrame with query results
         """
         import pandas as pd
@@ -225,7 +225,7 @@ class InfluxDB3Hook(BaseHook):
         Run a SQL query from the triggerer and return results as a pandas DataFrame.
 
         :param query: SQL query string
-        :param query_parameters: Values for ``$name`` placeholders in the query. Optional.
+        :param query_parameters: Values for ``$name`` placeholders in the query. Defaults to ``None``.
         :return: pandas DataFrame with query results
         """
         client = await self.aget_conn()
